@@ -22,13 +22,13 @@ export default function Home() {
         <Card className="w-full max-w-2xl border-zinc-800 bg-zinc-950/60 shadow-[0_0_50px_rgba(20,184,166,0.15)] hover:shadow-[0_0_80px_rgba(20,184,166,0.25)] transition-shadow duration-300">
           <CardContent className="flex flex-col items-center gap-6 px-8 py-12 text-center">
             
-            <h1 className="text-4xl font-semibold tracking-tight">
-              Find opportunities that actually matter
+            <h1 className="text-2xl font-semibold tracking-tight">
+              Your dream career, one event at a time
             </h1>
 
             <p className="text-lg text-zinc-400">
               Discover campus clubs, events, and opportunities that align with your
-              goals so you stop wasting time on random events.
+              goals.
             </p>
 
             <Link href="/onboarding">
@@ -43,7 +43,6 @@ export default function Home() {
             <div className="mt-6 grid gap-1 text-sm text-zinc-500">
               <p>• Tell us your major and goals</p>
               <p>• Get curated event recommendations</p>
-              <p>• Track actions and deadlines</p>
             </div>
           </CardContent>
         </Card>
