@@ -46,9 +46,6 @@ export default function DashboardPage() {
   const [loadingRecommendations, setLoadingRecommendations] = useState(false)
   const [usedFallback, setUsedFallback] = useState(false)
   const [fallbackType, setFallbackType] = useState<string | null>(null)
-  const [goingCount, setGoingCount] = useState(0)
-  const [attendedCount, setAttendedCount] = useState(0)
-  const [skippedCount, setSkippedCount] = useState(0)
   const router = useRouter()
 
   // Check auth and load profile
@@ -80,50 +77,17 @@ export default function DashboardPage() {
     return () => unsubscribe()
   }, [router])
 
-  // ✅ FIXED: Fetch folder counts
-  const fetchFolderCounts = async () => {
-    if (!user) return
-
-    try {
-      const userEventsRef = collection(db, 'users', user.uid, 'userEvents')
-      const allUserEvents = await getDocs(userEventsRef)
-
-      let going = 0
-      let attended = 0
-      let skipped = 0
-
-      allUserEvents.forEach((doc) => {
-        const data = doc.data()
-        if (data.status === 'going') going++
-        if (data.status === 'attended') attended++
-        if (data.status === 'skipped') skipped++
-      })
-
-      setGoingCount(going)
-      setAttendedCount(attended)
-      setSkippedCount(skipped)
-
-      console.log(`📊 Folder counts: Going=${going}, Attended=${attended}, Skipped=${skipped}`)
-    } catch (error) {
-      console.error('Error fetching folder counts:', error)
-    }
-  }
-
-  // ✅ FIXED: Better exclusion logic + proper recommendations call
   const fetchEventsAndRecommend = async () => {
     if (!userProfile) return
 
     setLoadingRecommendations(true)
 
     try {
-      // 1. Fetch all events
       const eventsSnapshot = await getDocs(collection(db, 'events'))
       const allEventsData = eventsSnapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
       })) as Event[]
-
-      console.log(`📋 Fetched ${allEventsData.length} events from Firebase`)
 
       if (allEventsData.length === 0) {
         setEvents([])
@@ -131,38 +95,29 @@ export default function DashboardPage() {
         return
       }
 
-      // 2. Get excluded event IDs (skipped + attended)
       let excludedEventIds: string[] = []
       if (user) {
         const userEventsRef = collection(db, 'users', user.uid, 'userEvents')
         const allUserEvents = await getDocs(userEventsRef)
-        
+
         allUserEvents.forEach((doc) => {
           const data = doc.data()
-          // ✅ EXCLUDE: skipped and attended events
           if (data.status === 'skipped' || data.status === 'attended') {
             excludedEventIds.push(doc.id)
           }
         })
-        
-        console.log(`🚫 Excluding ${excludedEventIds.length} events (skipped/attended)`)
       }
 
-      // 3. Filter to only show non-excluded events for recommendations
       const recommendableEvents = allEventsData.filter(
         (e) => !excludedEventIds.includes(e.id)
       )
 
-      console.log(`✅ ${recommendableEvents.length} events available for recommendations`)
-
       if (recommendableEvents.length === 0) {
-        console.log('No events to recommend')
         setEvents([])
         setLoadingRecommendations(false)
         return
       }
 
-      // 4. Fetch user ratings
       let userRatings: UserRating[] = []
       if (user) {
         try {
@@ -170,15 +125,11 @@ export default function DashboardPage() {
           userRatings = ratingsSnapshot.docs
             .map((doc) => doc.data() as UserRating)
             .filter((r) => r.userId === user.uid)
-
-          console.log(`⭐ User has ${userRatings.length} past ratings`)
         } catch (error) {
           console.error('Error fetching ratings:', error)
         }
       }
 
-      // 5. Call recommendations API with ONLY recommendable events
-      console.log('🤖 Calling recommendations API...')
       const response = await fetch('/api/recommendations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -196,11 +147,9 @@ export default function DashboardPage() {
       const data = await response.json()
 
       if (data.usedFallback) {
-        console.log('⚠️ Using fallback ranking:', data.fallbackType)
         setUsedFallback(true)
         setFallbackType(data.fallbackType || null)
       } else {
-        console.log('✅ AI recommendations received')
         setUsedFallback(false)
         setFallbackType(null)
       }
@@ -208,66 +157,19 @@ export default function DashboardPage() {
       setEvents(data.rankedEvents || [])
     } catch (error) {
       console.error('❌ Error fetching recommendations:', error)
-
-      // Fallback: sort by ratings
-      try {
-        const eventsSnapshot = await getDocs(collection(db, 'events'))
-        const allEventsData = eventsSnapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        })) as Event[]
-
-        // Get excluded IDs again
-        let excludedEventIds: string[] = []
-        if (user) {
-          const userEventsRef = collection(db, 'users', user.uid, 'userEvents')
-          const allUserEvents = await getDocs(userEventsRef)
-          allUserEvents.forEach((doc) => {
-            if (doc.data().status === 'skipped' || doc.data().status === 'attended') {
-              excludedEventIds.push(doc.id)
-            }
-          })
-        }
-
-        const filtered = allEventsData.filter((e) => !excludedEventIds.includes(e.id))
-        const sorted = filtered.sort((a, b) => (b.averageRating || 0) - (a.averageRating || 0))
-
-        setEvents(sorted)
-        setUsedFallback(true)
-        setFallbackType('ratings-only')
-        console.log('📊 Using ratings-only fallback')
-      } catch (fallbackError) {
-        console.error('Fallback failed:', fallbackError)
-        setEvents([])
-      }
+      setEvents([])
+      setUsedFallback(true)
+      setFallbackType('ratings-only')
     } finally {
       setLoadingRecommendations(false)
     }
   }
 
-  // Fetch on mount
   useEffect(() => {
     if (userProfile) {
       fetchEventsAndRecommend()
-      fetchFolderCounts()
     }
   }, [userProfile, user])
-
-  // ✅ Auto-refresh when user returns from event page
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        console.log('🔄 User returned - refetching recommendations and folder counts...')
-        if (userProfile) {
-          fetchEventsAndRecommend()
-          fetchFolderCounts()
-        }
-      }
-    }
-
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [userProfile])
 
   const handleSignOut = async () => {
     try {
@@ -304,7 +206,6 @@ export default function DashboardPage() {
       <Header />
 
       <main className="mx-auto max-w-7xl px-6 py-12">
-        {/* Banner */}
         <div className="mb-4">
           <Card className="border-zinc-800 bg-zinc-950/60">
             <CardContent className="py-3 px-4 text-xs text-zinc-300 flex items-center justify-between">
@@ -320,7 +221,6 @@ export default function DashboardPage() {
           </Card>
         </div>
 
-        {/* Welcome Section */}
         <div className="mb-8">
           <h2 className="text-3xl font-semibold mb-2">
             Welcome{user ? `, ${user.displayName?.split(' ')[0]}` : ''}!
@@ -333,7 +233,6 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Profile Card */}
         {userProfile && (
           <Card className="border-zinc-800 bg-zinc-950/60 shadow-[0_40px_rgba(20,184,166,0.1)] mb-8">
             <CardContent className="p-6">
@@ -365,59 +264,26 @@ export default function DashboardPage() {
                 )}
               </div>
 
-              {/* Folder Stats */}
-              <div className="grid gap-3 md:grid-cols-3 mb-6 py-4 border-t border-b border-zinc-800">
-                <Link href="/dashboard/sections?folder=going">
-                  <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/20 hover:border-blue-500/50 cursor-pointer">
-                    <div className="text-2xl font-semibold text-blue-400">{goingCount}</div>
-                    <div className="text-xs text-zinc-400">🎯 Going</div>
-                  </div>
-                </Link>
-
-                <Link href="/dashboard/sections?folder=attended">
-                  <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/20 hover:border-green-500/50 cursor-pointer">
-                    <div className="text-2xl font-semibold text-green-400">{attendedCount}</div>
-                    <div className="text-xs text-zinc-400">✅ Attended</div>
-                  </div>
-                </Link>
-
-                <Link href="/dashboard/sections?folder=skipped">
-                  <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 hover:border-amber-500/50 cursor-pointer">
-                    <div className="text-2xl font-semibold text-amber-400">{skippedCount}</div>
-                    <div className="text-xs text-zinc-400">⏭️ Skipped</div>
-                  </div>
-                </Link>
-              </div>
-
-              <div className="flex gap-3">
-                <Link href="/change-major">
-                  <Button className="bg-teal-500 text-black hover:bg-teal-600">
-                    ⚙️ Change Major
-                  </Button>
-                </Link>
-
-                {user ? (
-                  <Button
-                    onClick={handleSignOut}
-                    variant="outline"
-                    className="border-zinc-700 text-zinc-300"
-                  >
-                    Sign Out
-                  </Button>
-                ) : (
-                  <Button
-                    onClick={() => router.push('/onboarding')}
-                    className="bg-teal-500 text-black hover:bg-teal-600"
-                  >
-                    Sign In to Save Progress
-                  </Button>
-                )}
-              </div>
+              {user ? (
+                <Button
+                  onClick={handleSignOut}
+                  variant="outline"
+                  className="border-zinc-700 text-zinc-300"
+                >
+                  Sign Out
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => router.push('/onboarding')}
+                  className="bg-teal-500 text-black hover:bg-teal-600"
+                >
+                  Sign In to Save Progress
+                </Button>
+              )}
             </CardContent>
           </Card>
         )}
 
-        {/* Events Section */}
         <div>
           <h3 className="text-2xl font-semibold mb-6">
             {loadingRecommendations ? 'Loading Recommendations...' : 'Recommended Events'}

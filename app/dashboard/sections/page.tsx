@@ -35,7 +35,6 @@ interface UserRating {
   userId: string
   eventId: string
   rating: number
-  status: string
 }
 
 export default function DashboardPage() {
@@ -46,9 +45,6 @@ export default function DashboardPage() {
   const [loadingRecommendations, setLoadingRecommendations] = useState(false)
   const [usedFallback, setUsedFallback] = useState(false)
   const [fallbackType, setFallbackType] = useState<string | null>(null)
-  const [goingCount, setGoingCount] = useState(0)
-  const [attendedCount, setAttendedCount] = useState(0)
-  const [skippedCount, setSkippedCount] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const router = useRouter()
 
@@ -81,48 +77,11 @@ export default function DashboardPage() {
     return () => unsubscribe()
   }, [router])
 
-  // ✅ FIXED: Fetch folder counts with better error handling
-  const fetchFolderCounts = async (currentUser: User | null) => {
-    if (!currentUser) {
-      console.log('⏭️ No user, skipping folder counts')
-      return
-    }
-
-    try {
-      console.log(`📊 Fetching folder counts for user: ${currentUser.uid}`)
-      const userEventsRef = collection(db, 'users', currentUser.uid, 'userEvents')
-      const allUserEvents = await getDocs(userEventsRef)
-
-      let going = 0
-      let attended = 0
-      let skipped = 0
-
-      allUserEvents.forEach((doc) => {
-        const data = doc.data()
-        console.log(`   Event: ${doc.id} → status: ${data.status}`)
-        if (data.status === 'going') going++
-        if (data.status === 'attended') attended++
-        if (data.status === 'skipped') skipped++
-      })
-
-      console.log(`✅ Folder counts updated: Going=${going}, Attended=${attended}, Skipped=${skipped}`)
-      setGoingCount(going)
-      setAttendedCount(attended)
-      setSkippedCount(skipped)
-    } catch (error) {
-      console.error('❌ Error fetching folder counts:', error)
-    }
-  }
-
-  // ✅ FIXED: Better exclusion logic + proper recommendations call
+  // Fetch events and recommend
   const fetchEventsAndRecommend = async (currentUser: User | null) => {
-    if (!userProfile) {
-      console.log('⏭️ No user profile yet')
-      return
-    }
+    if (!userProfile) return
 
     setLoadingRecommendations(true)
-
     try {
       // 1. Fetch all events
       const eventsSnapshot = await getDocs(collection(db, 'events'))
@@ -131,52 +90,7 @@ export default function DashboardPage() {
         ...doc.data(),
       })) as Event[]
 
-      console.log(`📋 Fetched ${allEventsData.length} events from Firebase`)
-
-      if (allEventsData.length === 0) {
-        console.log('⚠️ No events found in Firebase')
-        setEvents([])
-        setLoadingRecommendations(false)
-        return
-      }
-
-      // 2. Get excluded event IDs (skipped + attended) - ONLY IF LOGGED IN
-      let excludedEventIds: string[] = []
-      if (currentUser) {
-        console.log(`🔍 Getting excluded events for user: ${currentUser.uid}`)
-        const userEventsRef = collection(db, 'users', currentUser.uid, 'userEvents')
-        const allUserEvents = await getDocs(userEventsRef)
-        
-        console.log(`   Found ${allUserEvents.docs.length} total user events`)
-        allUserEvents.forEach((doc) => {
-          const data = doc.data()
-          // ✅ EXCLUDE: skipped and attended events
-          if (data.status === 'skipped' || data.status === 'attended') {
-            excludedEventIds.push(doc.id)
-            console.log(`   Excluding: ${doc.id} (${data.status})`)
-          }
-        })
-        
-        console.log(`🚫 Total excluded: ${excludedEventIds.length} events`)
-      } else {
-        console.log('⏭️ Guest user - not excluding any events')
-      }
-
-      // 3. Filter to only show non-excluded events for recommendations
-      const recommendableEvents = allEventsData.filter(
-        (e) => !excludedEventIds.includes(e.id)
-      )
-
-      console.log(`✅ ${recommendableEvents.length} events available for recommendations`)
-
-      if (recommendableEvents.length === 0) {
-        console.log('⚠️ No events to recommend')
-        setEvents([])
-        setLoadingRecommendations(false)
-        return
-      }
-
-      // 4. Fetch user ratings
+      // 2. Fetch user ratings if logged in
       let userRatings: UserRating[] = []
       if (currentUser) {
         try {
@@ -184,37 +98,25 @@ export default function DashboardPage() {
           userRatings = ratingsSnapshot.docs
             .map((doc) => doc.data() as UserRating)
             .filter((r) => r.userId === currentUser.uid)
-
-          console.log(`⭐ User has ${userRatings.length} past ratings`)
         } catch (error) {
           console.error('❌ Error fetching ratings:', error)
         }
       }
 
-      // 5. Call recommendations API with ONLY recommendable events
-      console.log('🤖 Calling recommendations API...')
+      // 3. Call recommendations API
       const response = await fetch('/api/recommendations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userProfile,
-          events: recommendableEvents,
-          userRatings,
-        }),
+        body: JSON.stringify({ userProfile, events: allEventsData, userRatings }),
       })
 
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status}`)
-      }
-
+      if (!response.ok) throw new Error(`API error: ${response.status}`)
       const data = await response.json()
 
       if (data.usedFallback) {
-        console.log('⚠️ Using fallback ranking:', data.fallbackType)
         setUsedFallback(true)
         setFallbackType(data.fallbackType || null)
       } else {
-        console.log('✅ AI recommendations received')
         setUsedFallback(false)
         setFallbackType(null)
       }
@@ -223,7 +125,7 @@ export default function DashboardPage() {
     } catch (error) {
       console.error('❌ Error fetching recommendations:', error)
 
-      // Fallback: sort by ratings
+      // Fallback: sort by rating
       try {
         const eventsSnapshot = await getDocs(collection(db, 'events'))
         const allEventsData = eventsSnapshot.docs.map((doc) => ({
@@ -231,25 +133,10 @@ export default function DashboardPage() {
           ...doc.data(),
         })) as Event[]
 
-        // Get excluded IDs again
-        let excludedEventIds: string[] = []
-        if (currentUser) {
-          const userEventsRef = collection(db, 'users', currentUser.uid, 'userEvents')
-          const allUserEvents = await getDocs(userEventsRef)
-          allUserEvents.forEach((doc) => {
-            if (doc.data().status === 'skipped' || doc.data().status === 'attended') {
-              excludedEventIds.push(doc.id)
-            }
-          })
-        }
-
-        const filtered = allEventsData.filter((e) => !excludedEventIds.includes(e.id))
-        const sorted = filtered.sort((a, b) => (b.averageRating || 0) - (a.averageRating || 0))
-
+        const sorted = allEventsData.sort((a, b) => (b.averageRating || 0) - (a.averageRating || 0))
         setEvents(sorted)
         setUsedFallback(true)
         setFallbackType('ratings-only')
-        console.log('📊 Using ratings-only fallback')
       } catch (fallbackError) {
         console.error('❌ Fallback failed:', fallbackError)
         setEvents([])
@@ -259,39 +146,15 @@ export default function DashboardPage() {
     }
   }
 
-  // Fetch on mount - with user dependency
   useEffect(() => {
     if (userProfile && user) {
-      console.log('🚀 Fetching initial data...')
       fetchEventsAndRecommend(user)
-      fetchFolderCounts(user)
     }
   }, [userProfile, user])
 
-  // ✅ Auto-refresh when user returns from event page
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        console.log('🔄 Page became visible - refetching data...')
-        if (user && userProfile) {
-          fetchEventsAndRecommend(user)
-          fetchFolderCounts(user)
-        }
-      }
-    }
-
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [user, userProfile])
-
-  // Manual refresh function
   const handleManualRefresh = async () => {
-    console.log('🔄 Manual refresh triggered')
     setRefreshing(true)
-    if (user) {
-      await fetchFolderCounts(user)
-      await fetchEventsAndRecommend(user)
-    }
+    if (user) await fetchEventsAndRecommend(user)
     setRefreshing(false)
   }
 
@@ -401,30 +264,6 @@ export default function DashboardPage() {
                 )}
               </div>
 
-              {/* Folder Stats */}
-              <div className="grid gap-3 md:grid-cols-3 mb-6 py-4 border-t border-b border-zinc-800">
-                <Link href="/dashboard/sections?folder=going">
-                  <div className="p-4 rounded-lg bg-blue-500/10 border border-blue-500/20 hover:border-blue-500/50 cursor-pointer">
-                    <div className="text-2xl font-semibold text-blue-400">{goingCount}</div>
-                    <div className="text-xs text-zinc-400">🎯 Going</div>
-                  </div>
-                </Link>
-
-                <Link href="/dashboard/sections?folder=attended">
-                  <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/20 hover:border-green-500/50 cursor-pointer">
-                    <div className="text-2xl font-semibold text-green-400">{attendedCount}</div>
-                    <div className="text-xs text-zinc-400">✅ Attended</div>
-                  </div>
-                </Link>
-
-                <Link href="/dashboard/sections?folder=skipped">
-                  <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/20 hover:border-amber-500/50 cursor-pointer">
-                    <div className="text-2xl font-semibold text-amber-400">{skippedCount}</div>
-                    <div className="text-xs text-zinc-400">⏭️ Skipped</div>
-                  </div>
-                </Link>
-              </div>
-
               <div className="flex gap-3">
                 <Link href="/change-major">
                   <Button className="bg-teal-500 text-black hover:bg-teal-600">
@@ -473,9 +312,7 @@ export default function DashboardPage() {
               <CardContent className="flex flex-col items-center justify-center py-16 text-center">
                 <div className="mb-4 text-6xl">📭</div>
                 <h4 className="text-xl font-semibold mb-2">No Events Yet</h4>
-                <p className="text-zinc-400">
-                  {user ? 'All available events have been marked as attended or skipped.' : 'Events will appear here once added to database.'}
-                </p>
+                <p className="text-zinc-400">Events will appear here once added to database.</p>
               </CardContent>
             </Card>
           ) : (
@@ -532,3 +369,4 @@ export default function DashboardPage() {
     </div>
   )
 }
+
