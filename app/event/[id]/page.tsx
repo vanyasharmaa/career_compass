@@ -1,30 +1,21 @@
-// app/event/[id]/page.tsx
 'use client'
 
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { auth, db } from '@/lib/firebase'
 import { onAuthStateChanged, User } from 'firebase/auth'
-import {
-  doc,
-  getDoc,
-  setDoc,
-  updateDoc,
-  collection,
-  query,
-  where,
-  getDocs,
-  deleteDoc,
-} from 'firebase/firestore'
+import { doc, getDoc, setDoc, updateDoc, collection, query, where, getDocs } from 'firebase/firestore'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Header } from '@/components/ui/header'
+import Link from 'next/link'
 
 interface Event {
   id: string
   title: string
   description: string
-  careerPaths?: string[]
+  careerPaths?: string
   skillsLearned?: string[]
   date?: string
   location?: string
@@ -32,30 +23,30 @@ interface Event {
   averageRating?: number
   totalRatings?: number
   feedbackToken?: string
-  link?: string
 }
 
 type StatusType = 'going' | 'attended' | 'skipped'
 
 export default function EventPage() {
-  const params = useParams<{ id: string }>()
+  const params = useParams()
+  const id = params?.id as string
   const router = useRouter()
-  const eventId = params?.id
+  const eventId = id
 
   const [user, setUser] = useState<User | null>(null)
   const [event, setEvent] = useState<Event | null>(null)
   const [loading, setLoading] = useState(true)
-
   const [status, setStatus] = useState<StatusType | null>(null)
   const [rating, setRating] = useState<number | null>(null)
   const [submitting, setSubmitting] = useState(false)
-
   const [tokenInput, setTokenInput] = useState('')
   const [tokenError, setTokenError] = useState('')
 
   // Watch auth
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u || null))
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u || null)
+    })
     return () => unsub()
   }, [])
 
@@ -64,86 +55,132 @@ export default function EventPage() {
     const fetchEvent = async () => {
       if (!eventId) return
 
-      const ref = doc(db, 'events', eventId)
-      const snap = await getDoc(ref)
-      if (!snap.exists()) {
-        router.push('/dashboard')
-        return
-      }
+      try {
+        const ref = doc(db, 'events', eventId)
+        const snap = await getDoc(ref)
 
-      const data = snap.data() as any
-      setEvent({ ...data, id: snap.id })
-      setLoading(false)
+        if (!snap.exists()) {
+          router.push('/dashboard')
+          return
+        }
+
+        const data = snap.data() as any
+        setEvent({ ...data, id: snap.id })
+        setLoading(false)
+      } catch (error) {
+        console.error('Error fetching event:', error)
+        setLoading(false)
+      }
     }
 
     fetchEvent()
   }, [eventId, router])
 
-  // Fetch existing rating/status for this user + event
+  // Fetch existing rating/status for this user event
   useEffect(() => {
     const fetchUserRating = async () => {
       if (!user || !eventId) return
 
-      // Check userEvents for status
-      const userEventRef = doc(db, 'userEvents', `${user.uid}_${eventId}`)
-      const userEventSnap = await getDoc(userEventRef)
-      if (userEventSnap.exists()) {
-        const ue = userEventSnap.data() as any
-        if (ue.status) setStatus(ue.status as StatusType)
-      }
+      try {
+        // Check userEvents subcollection
+        const userEventRef = doc(db, 'users', user.uid, 'userEvents', eventId)
+        const userEventSnap = await getDoc(userEventRef)
 
-      // Check ratings for rating value
-      const ratingsRef = collection(db, 'ratings')
-      const qRatings = query(
-        ratingsRef,
-        where('userId', '==', user.uid),
-        where('eventId', '==', eventId)
-      )
-      const snapRatings = await getDocs(qRatings)
-      if (!snapRatings.empty) {
-        const data = snapRatings.docs[0].data() as any
-        if (typeof data.rating === 'number') setRating(data.rating)
+        if (userEventSnap.exists()) {
+          const userEventData = userEventSnap.data()
+          if (userEventData.status) {
+            setStatus(userEventData.status as StatusType)
+          }
+        }
+
+        // Check ratings collection for rating
+        const ratingsRef = collection(db, 'ratings')
+        const q = query(
+          ratingsRef,
+          where('userId', '==', user.uid),
+          where('eventId', '==', eventId)
+        )
+        const snap = await getDocs(q)
+
+        if (!snap.empty) {
+          const data = snap.docs[0].data() as any
+          if (typeof data.rating === 'number') {
+            setRating(data.rating)
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching user rating:', error)
       }
     }
 
     fetchUserRating()
   }, [user, eventId])
 
-  // Handle status changes with toggle behavior
-  const handleStatusChange = async (newStatus: StatusType) => {
+  // Refresh recommendations after status change
+  const refreshRecommendations = async () => {
+    if (!user) return
+
+    try {
+      console.log('🔄 Refreshing recommendations...')
+      // This will trigger a re-fetch on dashboard when user returns
+    } catch (error) {
+      console.error('Error refreshing recommendations:', error)
+    }
+  }
+
+  // ✅ FIXED: Handle status changes with TOGGLE logic
+  const handleStatusChange = async (newStatus: StatusType | null) => {
     if (!user || !eventId) {
       alert('Sign in to track this event')
       return
     }
 
-    const userEventRef = doc(db, 'userEvents', `${user.uid}_${eventId}`)
-
     try {
-      // If user clicks the same status again, clear it (back to undecided)
-      if (status === newStatus) {
+      setSubmitting(true)
+
+      // If clicking same status again → CLEAR it (toggle off)
+      if (status === newStatus && newStatus !== null) {
+        console.log(`🔄 Clearing status for event ${eventId}`)
+        
+        const userEventRef = doc(db, 'users', user.uid, 'userEvents', eventId)
+        await setDoc(
+          userEventRef,
+          {
+            userId: user.uid,
+            eventId,
+            status: null,
+            statusChangedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        )
+
+        console.log(`✅ Status cleared - event no longer marked`)
         setStatus(null)
-        setTokenInput('') // Clear token input
-        setTokenError('') // Clear token error
-        setRating(null) // Clear rating when toggling off attended
-        await deleteDoc(userEventRef)
+        await refreshRecommendations()
         return
       }
 
-      // Going / skipped can be set directly
+      // Otherwise set new status
       if (newStatus === 'going' || newStatus === 'skipped') {
+        console.log(`📍 Setting status to ${newStatus}`)
         setStatus(newStatus)
-        setTokenInput('') // Clear token
-        setRating(null) // Clear rating
+
+        const userEventRef = doc(db, 'users', user.uid, 'userEvents', eventId)
         await setDoc(
           userEventRef,
           {
             userId: user.uid,
             eventId,
             status: newStatus,
+            statusChangedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           },
           { merge: true }
         )
+
+        console.log(`✅ Event marked as ${newStatus}`)
+        await refreshRecommendations()
         return
       }
 
@@ -153,41 +190,52 @@ export default function EventPage() {
           alert('This event is not accepting feedback yet.')
           return
         }
+
         if (tokenInput.trim() !== event.feedbackToken) {
           setTokenError('Invalid code. Use the event code shared by the club.')
           return
         }
 
         setTokenError('')
+        console.log(`📍 Setting status to attended`)
         setStatus('attended')
 
+        const userEventRef = doc(db, 'users', user.uid, 'userEvents', eventId)
         await setDoc(
           userEventRef,
           {
             userId: user.uid,
             eventId,
             status: 'attended',
+            statusChangedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           },
           { merge: true }
         )
+
+        console.log('✅ Event marked as attended')
+        await refreshRecommendations()
       }
     } catch (error) {
-      console.error('Error changing status:', error)
+      console.error('Error updating status:', error)
       alert('Could not update status. Try again.')
+    } finally {
+      setSubmitting(false)
     }
   }
 
-  // Submit rating (1–5 only) – only if attended
+  // Submit rating (5/5 only, only if attended)
   const handleSubmitRating = async () => {
     if (!user || !eventId) {
       alert('Sign in to rate this event')
       return
     }
+
     if (status !== 'attended') {
       alert('You can only rate events you attended.')
       return
     }
+
     if (!rating) {
       alert('Please select a rating')
       return
@@ -196,8 +244,9 @@ export default function EventPage() {
     try {
       setSubmitting(true)
 
-      const ratingId = `${user.uid}_${eventId}`
+      const ratingId = `${user.uid}${eventId}`
       const ratingRef = doc(db, 'ratings', ratingId)
+
       await setDoc(
         ratingRef,
         {
@@ -226,6 +275,7 @@ export default function EventPage() {
       })
 
       const avg = count > 0 ? total / count : 0
+
       const eventRef = doc(db, 'events', eventId)
       await updateDoc(eventRef, {
         averageRating: avg,
@@ -233,7 +283,6 @@ export default function EventPage() {
       })
 
       alert('Thanks for rating!')
-      setTokenInput('') // Clear token input after successful submission
     } catch (err) {
       console.error(err)
       alert('Could not submit rating. Try again.')
@@ -252,8 +301,10 @@ export default function EventPage() {
 
   return (
     <div className="min-h-screen bg-black">
+      <Header />
+
       <main className="mx-auto max-w-3xl px-6 py-10">
-        <Card className="border-zinc-800 bg-zinc-950/60 shadow-[0_0_40px_rgba(20,184,166,0.1)]">
+        <Card className="border-zinc-800 bg-zinc-950/60 shadow-[0_40px_rgba(20,184,166,0.1)]">
           <CardContent className="p-6 space-y-6">
             {/* Header */}
             <div className="flex justify-between items-start gap-4">
@@ -264,30 +315,39 @@ export default function EventPage() {
               <div className="text-right text-sm text-zinc-400">
                 <div>{event.location || 'TBD'}</div>
                 <div>{event.date || 'TBD'}</div>
-                <div className="mt-1">
-                  ⭐ {event.averageRating?.toFixed(1) || 'N/A'}{' '}
-                  <span className="text-zinc-500">
-                    ({event.totalRatings || 0} ratings)
-                  </span>
-                </div>
               </div>
             </div>
 
-            {/* Description */}
-            <p className="text-zinc-300">{event.description}</p>
+            <div className="mt-1">
+              {event.averageRating ? (
+                <span className="text-yellow-500">⭐ {event.averageRating.toFixed(1)}</span>
+              ) : (
+                <span className="text-zinc-500">N/A</span>
+              )}
+              <span className="text-zinc-500 ml-2">({event.totalRatings || 0} ratings)</span>
+            </div>
 
-            {/* Skills */}
-            {event.skillsLearned && event.skillsLearned.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {event.skillsLearned.map((skill) => (
-                  <Badge
-                    key={skill}
-                    variant="secondary"
-                    className="bg-teal-500/10 text-teal-400 text-xs"
-                  >
-                    {skill}
-                  </Badge>
-                ))}
+            {/* Description */}
+            <div>
+              <p className="text-zinc-300">{event.description}</p>
+            </div>
+
+            {/* Skills - FIXED: Check if array before .map() */}
+            {event.skillsLearned && 
+              Array.isArray(event.skillsLearned) && 
+              event.skillsLearned.length > 0 && (
+              <div>
+                <div className="flex flex-wrap gap-2">
+                  {event.skillsLearned.map((skill: string) => (
+                    <Badge
+                      key={skill}
+                      variant="secondary"
+                      className="bg-teal-500/10 text-teal-400 text-xs"
+                    >
+                      {skill}
+                    </Badge>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -306,13 +366,17 @@ export default function EventPage() {
                           : 'border-zinc-700 text-zinc-300 hover:bg-zinc-900'
                       }
                       onClick={() => handleStatusChange(s)}
+                      disabled={submitting}
+                      title={status === s ? 'Click again to clear' : 'Click to mark'}
                     >
-                      {s === 'going' && 'Going'}
-                      {s === 'attended' && 'Attended'}
-                      {s === 'skipped' && 'Skipped'}
+                      {s === 'going' ? '🎯 Going' : s === 'attended' ? '✅ Attended' : '⏭️ Skipped'}
+                      {status === s && ' ✓'}
                     </Button>
                   ))}
                 </div>
+                <p className="text-xs text-zinc-500 mt-2">
+                  💡 Click the same status again to remove it
+                </p>
               </div>
             ) : (
               <p className="text-sm text-zinc-500">
@@ -321,11 +385,11 @@ export default function EventPage() {
             )}
 
             {/* Token input for Attended */}
-            {user && status === null && (
+            {user && (
               <div className="space-y-2 mt-3">
                 <p className="text-xs text-zinc-500">
-                  To mark this event as <span className="text-teal-400">Attended</span>,
-                  enter the code shared by the club.
+                  To mark this event as <span className="text-teal-400">Attended</span>, enter the
+                  code shared by the club.
                 </p>
                 <div className="flex gap-2 items-center">
                   <input
@@ -338,6 +402,7 @@ export default function EventPage() {
                     variant="outline"
                     className="border-zinc-700 text-zinc-300 hover:bg-zinc-900"
                     onClick={() => handleStatusChange('attended')}
+                    disabled={submitting}
                   >
                     Confirm attended
                   </Button>
@@ -346,22 +411,7 @@ export default function EventPage() {
               </div>
             )}
 
-            {/* Event link when Going */}
-            {user && status === 'going' && event.link && (
-              <div className="mt-4 text-sm">
-                <p className="text-zinc-400 mb-1">Event link:</p>
-                <a
-                  href={event.link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-teal-400 underline"
-                >
-                  Open event / registration
-                </a>
-              </div>
-            )}
-
-            {/* Rating (1–5 only), visible ONLY if status === attended */}
+            {/* Rating - 5/5 only, visible only if attended */}
             {user && status === 'attended' && (
               <div className="space-y-3 border-t border-zinc-800 pt-4">
                 <p className="text-sm text-zinc-400">Rate this event</p>
