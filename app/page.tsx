@@ -1,3 +1,4 @@
+// app/page.tsx
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import Link from "next/link"
@@ -8,7 +9,7 @@ export default function Home() {
     <main className="flex min-h-screen items-center justify-center px-6">
       <div className="flex flex-col items-center gap-8">
         
-        {/* Logo floating above card , placeholder*/}
+        {/* Logo floating above card */}
         <Image
           src="/logo.png"
           alt="CareerCompass"
