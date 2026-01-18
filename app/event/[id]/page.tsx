@@ -14,6 +14,7 @@ import {
   query,
   where,
   getDocs,
+  deleteDoc,
 } from 'firebase/firestore'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -30,7 +31,8 @@ interface Event {
   club: string
   averageRating?: number
   totalRatings?: number
-  feedbackToken?: string // secret code club shares with attendees
+  feedbackToken?: string
+  link?: string
 }
 
 type StatusType = 'going' | 'attended' | 'skipped'
@@ -82,72 +84,97 @@ export default function EventPage() {
     const fetchUserRating = async () => {
       if (!user || !eventId) return
 
+      // Check userEvents for status
+      const userEventRef = doc(db, 'userEvents', `${user.uid}_${eventId}`)
+      const userEventSnap = await getDoc(userEventRef)
+      if (userEventSnap.exists()) {
+        const ue = userEventSnap.data() as any
+        if (ue.status) setStatus(ue.status as StatusType)
+      }
+
+      // Check ratings for rating value
       const ratingsRef = collection(db, 'ratings')
-      const q = query(
+      const qRatings = query(
         ratingsRef,
         where('userId', '==', user.uid),
         where('eventId', '==', eventId)
       )
-      const snap = await getDocs(q)
-      if (!snap.empty) {
-        const data = snap.docs[0].data() as any
+      const snapRatings = await getDocs(qRatings)
+      if (!snapRatings.empty) {
+        const data = snapRatings.docs[0].data() as any
         if (typeof data.rating === 'number') setRating(data.rating)
-        if (data.status) setStatus(data.status as StatusType)
       }
     }
 
     fetchUserRating()
   }, [user, eventId])
 
-  // Handle status changes
+  // Handle status changes with toggle behavior
   const handleStatusChange = async (newStatus: StatusType) => {
     if (!user || !eventId) {
       alert('Sign in to track this event')
       return
     }
 
-    // Going / skipped can be set directly
-    if (newStatus === 'going' || newStatus === 'skipped') {
-      setStatus(newStatus)
-      const userEventRef = doc(db, 'userEvents', `${user.uid}_${eventId}`)
-      await setDoc(
-        userEventRef,
-        {
-          userId: user.uid,
-          eventId,
-          status: newStatus,
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      )
-      return
-    }
+    const userEventRef = doc(db, 'userEvents', `${user.uid}_${eventId}`)
 
-    // Attended requires a valid token
-    if (newStatus === 'attended') {
-      if (!event?.feedbackToken) {
-        alert('This event is not accepting feedback yet.')
-        return
-      }
-      if (tokenInput.trim() !== event.feedbackToken) {
-        setTokenError('Invalid code. Use the event code shared by the club.')
+    try {
+      // If user clicks the same status again, clear it (back to undecided)
+      if (status === newStatus) {
+        setStatus(null)
+        setTokenInput('') // Clear token input
+        setTokenError('') // Clear token error
+        setRating(null) // Clear rating when toggling off attended
+        await deleteDoc(userEventRef)
         return
       }
 
-      setTokenError('')
-      setStatus('attended')
+      // Going / skipped can be set directly
+      if (newStatus === 'going' || newStatus === 'skipped') {
+        setStatus(newStatus)
+        setTokenInput('') // Clear token
+        setRating(null) // Clear rating
+        await setDoc(
+          userEventRef,
+          {
+            userId: user.uid,
+            eventId,
+            status: newStatus,
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        )
+        return
+      }
 
-      const userEventRef = doc(db, 'userEvents', `${user.uid}_${eventId}`)
-      await setDoc(
-        userEventRef,
-        {
-          userId: user.uid,
-          eventId,
-          status: 'attended',
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      )
+      // Attended requires a valid token
+      if (newStatus === 'attended') {
+        if (!event?.feedbackToken) {
+          alert('This event is not accepting feedback yet.')
+          return
+        }
+        if (tokenInput.trim() !== event.feedbackToken) {
+          setTokenError('Invalid code. Use the event code shared by the club.')
+          return
+        }
+
+        setTokenError('')
+        setStatus('attended')
+
+        await setDoc(
+          userEventRef,
+          {
+            userId: user.uid,
+            eventId,
+            status: 'attended',
+            updatedAt: new Date().toISOString(),
+          },
+          { merge: true }
+        )
+      }
+    } catch (error) {
+      console.error('Error changing status:', error)
+      alert('Could not update status. Try again.')
     }
   }
 
@@ -206,6 +233,7 @@ export default function EventPage() {
       })
 
       alert('Thanks for rating!')
+      setTokenInput('') // Clear token input after successful submission
     } catch (err) {
       console.error(err)
       alert('Could not submit rating. Try again.')
@@ -293,7 +321,7 @@ export default function EventPage() {
             )}
 
             {/* Token input for Attended */}
-            {user && (
+            {user && status === null && (
               <div className="space-y-2 mt-3">
                 <p className="text-xs text-zinc-500">
                   To mark this event as <span className="text-teal-400">Attended</span>,
@@ -318,7 +346,22 @@ export default function EventPage() {
               </div>
             )}
 
-            {/* Rating (1–5 only), visible only if attended */}
+            {/* Event link when Going */}
+            {user && status === 'going' && event.link && (
+              <div className="mt-4 text-sm">
+                <p className="text-zinc-400 mb-1">Event link:</p>
+                <a
+                  href={event.link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-teal-400 underline"
+                >
+                  Open event / registration
+                </a>
+              </div>
+            )}
+
+            {/* Rating (1–5 only), visible ONLY if status === attended */}
             {user && status === 'attended' && (
               <div className="space-y-3 border-t border-zinc-800 pt-4">
                 <p className="text-sm text-zinc-400">Rate this event</p>
